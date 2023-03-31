@@ -1,0 +1,118 @@
+global class myHandler implements Messaging.InboundEmailHandler {
+    global Messaging.InboundEmailResult handleInboundEmail(Messaging.InboundEmail email, Messaging.InboundEnvelope envelope) {
+        Messaging.InboundEmailResult result = new Messaging.InboundEmailResult();
+        
+        // Check if there is an attachment in the email
+        if(email.binaryAttachments != null && email.binaryAttachments.size() > 0) {
+            // Iterate through the attachments to find the CSV file
+            for(Messaging.Inboundemail.BinaryAttachment attachment : email.binaryAttachments) {
+                // Check if the attachment is a CSV file
+                if(attachment.fileName.endsWith('.csv')) {
+                    // Convert the CSV file to a string
+                    String csvString = attachment.body.toString();
+                    System.debug('CSV String: ' + csvString);
+                    // Split the string into rows
+                    List<String> rows = csvString.split('\n');
+                    
+                    // Extract the Concert Names from the CSV file
+                    Set<String> concertNames = new Set<String>();
+                    
+                    Set<String> contactIds = new Set<String>();
+                    
+                    Set<Integer> NumberOfSeats = new Set<Integer>();
+                    
+                    List<String> errorMessages = new List<String>();
+                    
+                    for (Integer i = 1; i < rows.size(); i++) {
+                        if (String.isNotBlank(rows[i])) {
+                            List<String> columns = rows[i].split(',');
+                            if (columns.size() >= 1) {
+                                String concertName = columns[0].trim();
+                                String contactId = columns[1].trim();
+                                Integer numOfSeats = Integer.valueOf(columns[2].trim());
+                                concertNames.add(concertName);
+                                contactIds.add(contactId);
+                                NumberOfSeats.add(numOfSeats);
+                                System.debug('ConcertNames@@@@@@@@@@@@'+concertNames);
+                                System.debug('ContactIds@@@@@@@@@@@@@@@'+contactIds);
+                                System.debug('NumberOfSeats@@@@@@@@@@@@'+NumberOfSeats);
+                            }
+                        }
+                    }
+                    
+                    // Query for the corresponding Concert__c records and put it in the concertMap variable
+                    Map<String, Id> concertMap = new Map<String, Id>();
+                    List<Concert__c> concerts = [Select Name From Concert__c where Name IN :concertNames];
+                    system.debug('Concerts@@@@@@@'+concerts);
+                    for(Concert__c concert : concerts){
+                        concertMap.put(concert.Name, concert.Id);                        
+                    }
+                    
+                    // Query for the corresponding Contact records and put it in the contactMap variable
+                    Map<Id, Contact> contactMap = new Map<Id, Contact>();
+                    List<Contact> contacts = [Select Id From Contact Where Id In : contactIds];
+                    system.debug('Contacts@@@@@@@@@'+contacts);
+                    for(Contact contact : contacts){
+                        contactMap.put(contact.Id, contact);
+                    }
+                    
+                    // Query for the corresponding Ticket records and put it in the TicketMap variable.
+                    Map<Integer, Ticket__c> TicketMap = new Map<Integer, Ticket__c>();
+                    List<Ticket__c> tickets = [Select Number_of_Ticket__c From Ticket__c Where Number_of_Ticket__c IN : NumberOfSeats];
+                    system.debug('tickets@@@@@@@@@@@@@@@@@@@'+tickets);
+                    for(Ticket__c ticket : tickets){
+                        TicketMap.put(Integer.valueOf(ticket.Number_of_Ticket__c), ticket);
+                    }
+                    
+                    // Insert the Ticket records
+                    List<Ticket__c> ticketToInsert = new List<Ticket__c>();
+                    for (Integer i = 1; i < rows.size(); i++) {
+                        if (String.isNotBlank(rows[i])) {
+                            List<String> columns = rows[i].split(',');
+                            if (columns.size() >= 3) {
+                                String concertName = columns[0].trim();
+                                String customerId = columns[1].trim();
+                                Integer numSeats = Integer.valueOf(columns[2].trim());
+                                if (concertMap.containsKey(concertName) && contactMap.containsKey(customerId) && TicketMap.containsKey(numSeats)) {
+                                    Ticket__c ticket = new Ticket__c(
+                                        Concert__c = concertMap.get(concertName),
+                                        Customer__c = contactMap.get(customerId).Id,
+                                        Number_of_Ticket__c = numSeats
+                                    );
+                                    ticketToInsert.add(ticket);
+                                    system.debug('ticketToInsert'+ticketToInsert);
+                                }
+                                else if(!concertMap.containsKey(concertName)){
+                                    errorMessages.add('Invalid Concert name '+ concertName + ' on row '+i);
+                                }
+                                else if(!contactMap.containsKey(customerId)){
+                                    errorMessages.add('Invalid Customer Id ' +customerId+ ' on row '+i);
+                                }
+                            }
+                        }
+                    }
+                    if (!ticketToInsert.isEmpty()) {
+                        Database.insert(ticketToInsert);
+                      //  Database.update(ticketToInsert);
+                        result.success = true;
+                        result.message = 'Event created successfully';
+                        system.debug('Event Created@@@@@@@@@'+result.success);
+                    }
+                    else if (!errorMessages.isEmpty()) {
+                        Messaging.SingleEmailMessage errorMessage = new Messaging.SingleEmailMessage();
+                        errorMessage.setToAddresses(new String[] {envelope.fromAddress});
+                        errorMessage.setSubject('Error processing CSV file');
+                        errorMessage.setPlainTextBody(String.join(errorMessages, '\n'));
+                        Messaging.EmailFileAttachment csvAttachment = new Messaging.EmailFileAttachment();
+                        csvAttachment.setFileName('ImportedData.csv');
+                        csvAttachment.setBody(Blob.valueOf(csvString));
+                        errorMessage.setFileAttachments(new Messaging.EmailFileAttachment[] {csvAttachment});
+                        Messaging.sendEmail(new Messaging.SingleEmailMessage[] {errorMessage});
+                    }
+                }
+            }
+        }
+        // Return the result object
+        return result;
+    }
+}
